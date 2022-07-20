@@ -9,14 +9,9 @@ import (
 
 	"github.com/golang-jwt/jwt"
 	"github.com/gorilla/mux"
+	"github.com/iancoleman/orderedmap"
 	"golang.org/x/crypto/bcrypt"
 )
-
-type response struct {
-	Ok    bool
-	Error string
-	Token string
-}
 
 type User struct {
 	username string
@@ -32,13 +27,23 @@ type tiket struct {
 var AllUsers []User
 var Alltikets []tiket
 
-func homepage(w http.ResponseWriter, _ *http.Request) {
+func ResponseBuilder(token, errorMsg string, isOk bool, statusCode int, w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
-	res := map[string]bool{
-		"ok": true,
+	res := orderedmap.New()
+	res.Set("ok", isOk)
+	if errorMsg != "" {
+		res.Set("error", errorMsg)
 	}
+	if token != "" {
+		res.Set("token", token)
+	}
+	w.WriteHeader(statusCode)
 	jsonResp, _ := json.Marshal(res)
 	w.Write(jsonResp)
+}
+
+func homepage(w http.ResponseWriter, _ *http.Request) {
+	ResponseBuilder("", "", true, 200, w)
 	return
 }
 
@@ -60,18 +65,11 @@ func GenerateToken(username string) string {
 }
 
 func signUp(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	r.ParseForm()
 	user := User{}
 	for key, value := range r.Form {
 		if value[0] == "" {
-			res := map[string]string{
-				"ok":    `false`,
-				"error": "no username or password provided",
-			}
-			w.WriteHeader(400)
-			jsonResp, _ := json.Marshal(res)
-			w.Write(jsonResp)
+			ResponseBuilder("", "no username or password provided", false, 400, w)
 			return
 		}
 		switch key {
@@ -84,104 +82,52 @@ func signUp(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, v := range AllUsers {
 		if v.username == user.username {
-			w.WriteHeader(400)
-			res := map[string]string{
-				"ok":    `false`,
-				"error": "user already exists",
-			}
-			jsonResp, _ := json.Marshal(res)
-			w.Write(jsonResp)
+			ResponseBuilder("", "user already exists", false, 400, w)
 			return
 		}
 	}
 
-	tokenn := GenerateToken(user.username)
+	newToken := GenerateToken(user.username)
+	user.Token = newToken
 
-	user.Token = tokenn
 	AllUsers = append(AllUsers, user)
-	if tokenn != "" {
-		w.WriteHeader(201)
-		res := map[string]string{
-			"ok":    `true`,
-			"token": tokenn,
-		}
-		jsonResp, _ := json.Marshal(res)
-		w.Write(jsonResp)
+	if newToken != "" {
+		ResponseBuilder(newToken, "", true, 201, w)
 		return
 	}
 }
 
 func logIn(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	r.ParseForm()
-	user := [2]string{}
-	for key, value := range r.Form {
-		if value[0] == "" {
-			w.WriteHeader(400)
-			res := map[string]string{
-				"ok":    `false`,
-				"error": "no username or password provided",
-			}
-			jsonResp, _ := json.Marshal(res)
-			w.Write(jsonResp)
-			// fmt.Fprintf(w, `{"ok":false,"error":"no username or password provided"}`)
-			return
-		}
-		switch key {
-		case "password":
-			user[0] = value[0]
-		case "username":
-			user[1] = value[0]
-		}
-	}
-	if len(AllUsers) == 0 {
-		w.WriteHeader(400)
-		res := map[string]string{
-			"ok":    `false`,
-			"error": "invalid username or password",
-		}
-		jsonResp, _ := json.Marshal(res)
-		w.Write(jsonResp)
-		// fmt.Fprintf(w, `{"ok":false,"error":"invalid username or password"}`)
+	user := User{}
+	user.username = r.Form["username"][0]
+	user.password = r.Form["password"][0]
+
+	if user.username == "" || user.password == "" {
+		ResponseBuilder("", "no username or password provided", false, 400, w)
 		return
 	}
-	// token := GenerateToken(user[1])
-	token := ""
+	if len(AllUsers) == 0 {
+		ResponseBuilder("", "invalid username or password", false, 400, w)
+		return
+	}
+	token := GenerateToken(user.username)
+	// token := ""
 	for i, v := range AllUsers {
-		if v.username == user[1] {
-			if err := bcrypt.CompareHashAndPassword([]byte(v.password), []byte(user[0])); err != nil {
-				w.WriteHeader(400)
-				res := map[string]string{
-					"ok":    `false`,
-					"error": "invalid username or password",
-				}
-				jsonResp, _ := json.Marshal(res)
-				w.Write(jsonResp)
+		if v.username == user.username {
+			if err := bcrypt.CompareHashAndPassword([]byte(v.password), []byte(user.password)); err != nil {
+				ResponseBuilder("", "invalid username or password", false, 400, w)
 				return
 			} else {
-				// v.Token = token
-				token = v.Token
+				v.Token = token
 				break
 			}
 		} else if i == len(AllUsers)-1 {
-			w.WriteHeader(400)
-			res := map[string]string{
-				"ok":    `false`,
-				"error": "invalid username or password",
-			}
-			jsonResp, _ := json.Marshal(res)
-			w.Write(jsonResp)
+			ResponseBuilder("", "invalid username or password", false, 400, w)
 			return
 		}
 	}
-	w.WriteHeader(200)
-	res := map[string]string{
-		"ok":    `true`,
-		"token": token,
-	}
-	jsonResp, _ := json.Marshal(res)
-	w.Write(jsonResp)
-	// fmt.Fprintf(w, `{"ok":true,"token":"%v"}`, token) //////
+	ResponseBuilder(token, "", true, 200, w)
 	return
 }
 
@@ -200,54 +146,38 @@ func isAthourised(tokenn string) (bool, string) {
 }
 
 func Suggestions(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	r.ParseForm()
-	token := r.Form["Authorization"][0]
+	token := r.Header.Get("Authorization")
 	text := r.Form["text"][0]
-	f, user := isAthourised(token)
-	if !f {
+	isAthourised, user := isAthourised(token)
+	if !isAthourised {
 		w.WriteHeader(401)
 		return
 	}
 	if text == "" {
-		w.WriteHeader(400)
-		res := map[string]string{
-			"ok":    `false`,
-			"error": "no text provided",
-		}
-		jsonResp, _ := json.Marshal(res)
-		w.Write(jsonResp)
-		// w.WriteHeader(400)
-		// fmt.Fprintf(w, `{"ok":false,"error":"no text provided"}`)
+		ResponseBuilder("", "no text provided", false, 400, w)
 		return
 	}
 	t := tiket{
 		text: text,
 		user: user,
 	}
-	// fmt.Println(t)
 	Alltikets = append(Alltikets, t)
-	w.WriteHeader(201)
-	res := map[string]bool{
-		"ok": true,
-	}
-	jsonResp, _ := json.Marshal(res)
-	w.Write(jsonResp)
+	ResponseBuilder("", "", true, 201, w)
 	return
 }
 
 func AllSuggestions(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	res := []map[string]string{}
-	w.WriteHeader(200)
+	allOrderedTikets := []*orderedmap.OrderedMap{}
 	for _, v := range Alltikets {
-		tmp := map[string]string{
-			"text": v.text,
-			"user": v.user,
-		}
-		res = append(res, tmp)
+		o := orderedmap.New()
+		o.Set("user", v.user)
+		o.Set("text", v.text)
+		allOrderedTikets = append(allOrderedTikets, o)
 	}
-	jsonResp, _ := json.Marshal(res)
+	w.WriteHeader(200)
+	jsonResp, _ := json.Marshal(allOrderedTikets)
 	w.Write(jsonResp)
 	return
 }
@@ -259,7 +189,7 @@ func main() {
 	r.HandleFunc("/login", logIn).Methods("POST")
 	r.HandleFunc("/suggestions", Suggestions).Methods("POST")
 	r.HandleFunc("/suggestions", AllSuggestions).Methods("GET")
-	// http.Handle("/", r)
+
 	srv := &http.Server{
 		Handler: r,
 		Addr:    ":80",
@@ -269,5 +199,4 @@ func main() {
 	if err != nil && err != http.ErrServerClosed {
 		log.Fatalln("Cannot server the server:", err)
 	}
-
 }
